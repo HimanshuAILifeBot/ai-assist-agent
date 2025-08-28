@@ -127,5 +127,5 @@ Thumbs.db
 chroma_db/
 backend/chroma_db/
 dump.rdb
-channels
+channels/whatsapp.py
 .env.env
