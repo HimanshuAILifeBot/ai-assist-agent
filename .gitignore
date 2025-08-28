@@ -127,3 +127,5 @@ Thumbs.db
 chroma_db/
 backend/chroma_db/
 dump.rdb
+channels
+.env.env
