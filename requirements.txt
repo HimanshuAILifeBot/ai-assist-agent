@@ -38,3 +38,6 @@ requests==2.32.5
 # Utilities
 pydantic==2.10.4
 pydantic-settings==2.8.0
+
+# Communication
+twilio==9.4.0

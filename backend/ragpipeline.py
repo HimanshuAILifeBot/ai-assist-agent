@@ -134,18 +134,19 @@ class QueryRequest(BaseModel):
 
 
 def save_conversation(
-    db: Session, user_id: int, question: str, answer: str, resolved: bool = False
+    db: Session, user_id: int, source: str, content: str, channel: str = "web", resolved: bool = False
 ):
-    """Save conversation to database"""
+    """Save a single interaction message to the database."""
     convo = Conversation(
         user_id=user_id,
-        interaction={"question": question, "answer": answer},
+        interaction={"source": source, "content": content, "channel": channel},
         resolved=resolved,
     )
     db.add(convo)
     db.commit()
     db.refresh(convo)
     return convo
+
 
 
 # Initialize router
@@ -169,13 +170,24 @@ def ask_question(
         answer = result["answer"]
         set_cached_answer(question, result)
 
-    # Save the conversation to the database
+    # Save the user's question
     save_conversation(
         db=db,
         user_id=current_user.id,
-        question=question,
-        answer=answer,
-        resolved=False,  # initially unresolved
+        source="user",
+        content=question,
+        channel="web",
+        resolved=False,
+    )
+
+    # Save the bot's answer
+    save_conversation(
+        db=db,
+        user_id=current_user.id,
+        source="bot",
+        content=answer,
+        channel="web",
+        resolved=False, # Or determine based on answer
     )
 
     return {"answer": answer}

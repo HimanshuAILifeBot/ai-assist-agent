@@ -8,6 +8,7 @@ from typing import List
 from fastapi import FastAPI, Depends, HTTPException, Request, File, UploadFile
 import shutil
 from fastapi.responses import HTMLResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -31,6 +32,16 @@ import schemas
 from adminbackend import tickets as tickets_crud
 
 app = FastAPI()
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # Allows the Next.js frontend
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 
 # Template setup
 templates = Jinja2Templates(directory="templates")
@@ -310,6 +321,10 @@ def admin_interface(request: Request):
 # -------------------------
 #  Admin Inbox
 # -------------------------
+
+
+
+
 class UserResponse(BaseModel):
     id: int
     email: str
@@ -331,6 +346,50 @@ class ConversationResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# -------------------------
+#  Admin Channels
+# -------------------------
+
+@app.get("/admin/channels", response_model=List[str])
+def list_channels(db: Session = Depends(get_db)):
+    """Return a list of unique channel names from conversations."""
+    # This query is complex to do in pure SQLAlchemy, so we use a little trick.
+    # We get all conversations, extract the channel name from the interaction JSON,
+    # and then find the unique set.
+    conversations = db.query(Conversation).all()
+    channel_set = {c.interaction.get("channel") for c in conversations if c.interaction.get("channel")}
+    return sorted(list(channel_set))
+
+@app.get("/admin/channels/{channel_name}/users", response_model=List[UserResponse])
+def get_users_by_channel(channel_name: str, db: Session = Depends(get_db)):
+    """Return a list of users who have interacted on a specific channel."""
+    # Find all conversations for the given channel
+    conversations = db.query(Conversation).filter(Conversation.interaction["channel"].astext == channel_name).all()
+    if not conversations:
+        return []
+    
+    # Get the unique user IDs from those conversations
+    user_ids = {c.user_id for c in conversations}
+    
+    # Get the user objects for those IDs
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    return users
+
+@app.get("/admin/channels/{channel_name}/users/{user_id}/conversations", response_model=List[ConversationResponse])
+def get_user_conversations_by_channel(channel_name: str, user_id: int, db: Session = Depends(get_db)):
+    """Return all conversations for a specific user on a specific channel."""
+    conversations = (
+        db.query(Conversation)
+        .filter(
+            Conversation.user_id == user_id,
+            Conversation.interaction["channel"].astext == channel_name
+        )
+        .order_by(Conversation.created_at.asc())
+        .all()
+    )
+    return conversations
+
 
 @app.get("/admin/inbox/dates", response_model=List[date])
 def get_inbox_dates_route(db: Session = Depends(get_db)):
@@ -374,6 +433,186 @@ def create_admin_user(admin: AdminCreate, db: Session = Depends(get_db)):
     db.refresh(new_admin)
 
     return {"msg": "Admin created successfully"}
+
+
+# -------------------------
+#  Omnichannel Webhooks
+# -------------------------
+from twilio.rest import Client
+from backend.ragpipeline import retrieval_chain, save_conversation
+from channels.builders.web import WebMessageBuilder
+from channels.builders.twilio import TwilioMessageBuilder
+from channels.builders.sms import SmsMessageBuilder # New import
+from channels.schemas import StandardizedMessage
+from typing import Dict, Any
+
+# --- Twilio Configuration ---
+# It is strongly recommended to use environment variables for these
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER") # e.g., 'whatsapp:+14155238886'
+TWILIO_SMS_NUMBER = os.getenv("TWILIO_SMS_NUMBER") # New SMS number env var
+
+# Initialize the Twilio client if credentials are provided
+twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+else:
+    print("WARNING: Twilio credentials not found. WhatsApp/SMS replies will be disabled.")
+
+
+@app.post("/hooks/web")
+async def handle_web_message(payload: Dict[Any, Any], db: Session = Depends(get_db)):
+    """
+    Handles incoming messages from the web chat, gets an AI response, and returns it.
+    """
+    try:
+        builder = WebMessageBuilder(payload)
+        standardized_message = builder.build()
+        question = standardized_message.content
+
+        # --- Find user and save their message ---
+        user = db.query(User).filter(User.email == standardized_message.sender_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with email '{standardized_message.sender_id}' not found.")
+
+        save_conversation(
+            db=db, 
+            user_id=user.id, 
+            source="user", 
+            content=question, 
+            channel=standardized_message.channel_name
+        )
+
+        # --- Generate and Save AI Response ---
+        result = retrieval_chain.invoke({"input": question})
+        ai_response_text = result.get("answer", "I could not find an answer.")
+
+        save_conversation(
+            db=db, 
+            user_id=user.id, 
+            source="bot", 
+            content=ai_response_text, 
+            channel=standardized_message.channel_name
+        )
+
+        # Return the AI response to the frontend
+        return {"answer": ai_response_text}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/hooks/twilio")
+async def handle_twilio_message(request: Request, db: Session = Depends(get_db)):
+    """
+    Handles incoming SMS from Twilio, gets an AI response, and sends a reply.
+    """
+    try:
+        payload = await request.form()
+        builder = TwilioMessageBuilder(payload)
+        standardized_message = builder.build()
+        question = standardized_message.content
+
+        # --- Find user and save their message ---
+        user = db.query(User).filter(User.phone_number == standardized_message.sender_id).first()
+        if not user:
+            print(f"User with phone number '{standardized_message.sender_id}' not found.")
+            return Response(content="", media_type="application/xml")
+
+        save_conversation(
+            db=db, 
+            user_id=user.id, 
+            source="user", 
+            content=question, 
+            channel=standardized_message.channel_name
+        )
+
+        # --- Generate and Send AI Response ---
+        result = retrieval_chain.invoke({"input": question})
+        ai_response_text = result.get("answer", "I could not find an answer.")
+
+        save_conversation(
+            db=db, 
+            user_id=user.id, 
+            source="bot", 
+            content=ai_response_text, 
+            channel=standardized_message.channel_name
+        )
+
+        # --- Send Reply via Twilio ---
+        if twilio_client and TWILIO_WHATSAPP_NUMBER:
+            try:
+                to_number = f"whatsapp:{standardized_message.sender_id}"
+                twilio_client.messages.create(
+                    from_=TWILIO_WHATSAPP_NUMBER,
+                    body=ai_response_text,
+                    to=to_number
+                )
+            except Exception as e:
+                print(f"ERROR: Failed to send Twilio message: {e}")
+        
+        return Response(content="", media_type="application/xml")
+
+    except Exception as e:
+        print(f"An unexpected error occurred in handle_twilio_message: {e}")
+        return Response(content="", media_type="application/xml")
+
+
+@app.post("/hooks/sms")
+async def handle_sms_message(request: Request, db: Session = Depends(get_db)):
+    """
+    Handles incoming SMS from Twilio, gets an AI response, and sends a reply.
+    """
+    try:
+        payload = await request.form()
+        builder = SmsMessageBuilder(payload)
+        standardized_message = builder.build()
+        question = standardized_message.content
+
+        # --- Find user and save their message ---
+        user = db.query(User).filter(User.phone_number == standardized_message.sender_id).first()
+        if not user:
+            print(f"User with phone number '{standardized_message.sender_id}' not found.")
+            return Response(content="", media_type="application/xml")
+
+        save_conversation(
+            db=db, 
+            user_id=user.id, 
+            source="user", 
+            content=question, 
+            channel=standardized_message.channel_name
+        )
+
+        # --- Generate and Send AI Response ---
+        result = retrieval_chain.invoke({"input": question})
+        ai_response_text = result.get("answer", "I could not find an answer.")
+
+        save_conversation(
+            db=db, 
+            user_id=user.id, 
+            source="bot", 
+            content=ai_response_text, 
+            channel=standardized_message.channel_name
+        )
+
+        # --- Send Reply via Twilio ---
+        if twilio_client and TWILIO_SMS_NUMBER:
+            try:
+                # For SMS, no special prefix is needed for the 'to' number
+                twilio_client.messages.create(
+                    from_=TWILIO_SMS_NUMBER,
+                    body=ai_response_text,
+                    to=standardized_message.sender_id
+                )
+            except Exception as e:
+                print(f"ERROR: Failed to send SMS message: {e}")
+        
+        return Response(content="", media_type="application/xml")
+
+    except Exception as e:
+        print(f"An unexpected error occurred in handle_sms_message: {e}")
+        return Response(content="", media_type="application/xml")
 
 
 # Include the router from ragpipeline.py

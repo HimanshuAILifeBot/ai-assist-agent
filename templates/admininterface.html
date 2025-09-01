@@ -129,6 +129,7 @@
         <h2>Admin Panel</h2>
         <ul>
             <li id="inbox-btn">Inbox</li>
+            <li id="channels-btn">Channels</li>
             <li id="knowledge-base-btn">Knowledge Base</li>
             <li id="query-tickets-btn">Query Tickets</li>
         </ul>
@@ -141,6 +142,17 @@
         <div class="right-column">
             <h3>Conversation</h3>
             <div id="conversation"></div>
+        </div>
+    </div>
+
+    <div class="main-content" id="channels-view">
+        <div class="left-column">
+            <h3>Channels</h3>
+            <div id="channel-list"></div>
+        </div>
+        <div class="right-column">
+            <h3>Conversation</h3>
+            <div id="channel-conversation"></div>
         </div>
     </div>
 
@@ -171,10 +183,12 @@
 
     <script>
         const inboxView = document.getElementById('inbox-view');
+        const channelsView = document.getElementById('channels-view');
         const knowledgeBaseView = document.getElementById('knowledge-base-view');
         const queryTicketsView = document.getElementById('query-tickets-view');
 
         const inboxBtn = document.getElementById('inbox-btn');
+        const channelsBtn = document.getElementById('channels-btn');
         const knowledgeBaseBtn = document.getElementById('knowledge-base-btn');
         const queryTicketsBtn = document.getElementById('query-tickets-btn');
 
@@ -182,14 +196,22 @@
         const fileInput = document.getElementById('file-input');
         const documentList = document.getElementById('document-list');
 
-        function switchView(view) {
-            inboxView.classList.remove('active');
-            knowledgeBaseView.classList.remove('active');
-            queryTicketsView.classList.remove('active');
-            document.getElementById(view).classList.add('active');
+        // --- View Switching ---
+        function switchView(viewId) {
+            [inboxView, channelsView, knowledgeBaseView, queryTicketsView].forEach(view => {
+                view.classList.remove('active');
+            });
+            document.getElementById(viewId).classList.add('active');
         }
 
-        inboxBtn.addEventListener('click', () => switchView('inbox-view'));
+        inboxBtn.addEventListener('click', () => {
+            switchView('inbox-view');
+            loadInboxDates();
+        });
+        channelsBtn.addEventListener('click', () => {
+            switchView('channels-view');
+            loadChannels();
+        });
         knowledgeBaseBtn.addEventListener('click', () => {
             switchView('knowledge-base-view');
             loadDocuments();
@@ -199,44 +221,41 @@
             loadTickets();
         });
 
-        uploadBtn.addEventListener('click', () => fileInput.click());
-
-        fileInput.addEventListener('change', () => {
-            const file = fileInput.files[0];
-            if (file) {
-                const formData = new FormData();
-                formData.append('file', file);
-
-                fetch('/admin/upload-document', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        loadDocuments();
-                    } else {
-                        alert('File upload failed');
-                    }
-                });
+        // --- Universal Conversation Renderer ---
+        function renderConversation(containerId, conversations) {
+            const conversationDiv = document.getElementById(containerId);
+            conversationDiv.innerHTML = '';
+            if (!conversations || conversations.length === 0) {
+                conversationDiv.textContent = 'No conversation found.';
+                return;
             }
-        });
+            conversations.forEach(conv => {
+                const msgDiv = document.createElement('div');
+                // Check for the old format first, then fall back to the new one
+                if (conv.interaction?.question || conv.interaction?.answer) {
+                    const userMsg = document.createElement('div');
+                    userMsg.classList.add('message', 'user-message');
+                    userMsg.textContent = `User: ${conv.interaction.question}`;
+                    conversationDiv.appendChild(userMsg);
 
-        function loadDocuments() {
-            fetch('/admin/get-documents')
-                .then(response => response.json())
-                .then(documents => {
-                    documentList.innerHTML = '';
-                    documents.forEach(doc => {
-                        const docElement = document.createElement('div');
-                        docElement.classList.add('document-item');
-                        docElement.textContent = doc;
-                        documentList.appendChild(docElement);
-                    });
-                });
+                    if(conv.interaction.answer) {
+                        const botMsg = document.createElement('div');
+                        botMsg.classList.add('message', 'bot-message');
+                        botMsg.textContent = `Bot: ${conv.interaction.answer}`;
+                        conversationDiv.appendChild(botMsg);
+                    }
+                } else {
+                    const source = conv.interaction?.source || 'unknown';
+                    const content = conv.interaction?.content || '(no content)';
+                    msgDiv.classList.add('message', source === 'user' ? 'user-message' : 'bot-message');
+                    msgDiv.textContent = `${source.charAt(0).toUpperCase() + source.slice(1)}: ${content}`;
+                    conversationDiv.appendChild(msgDiv);
+                }
+            });
         }
 
-        document.getElementById('inbox-btn').addEventListener('click', () => {
+        // --- Inbox View Logic ---
+        function loadInboxDates() {
             fetch('/admin/inbox/dates')
                 .then(response => response.json())
                 .then(dates => {
@@ -263,20 +282,7 @@
                                             event.stopPropagation();
                                             fetch(`/admin/inbox/conversations?user_id=${user.id}&date=${date}`)
                                                 .then(response => response.json())
-                                                .then(conversations => {
-                                                    const conversationDiv = document.getElementById('conversation');
-                                                    conversationDiv.innerHTML = '';
-                                                    conversations.forEach(conv => {
-                                                        const userMsg = document.createElement('div');
-                                                        userMsg.classList.add('message', 'user-message');
-                                                        userMsg.textContent = `User: ${conv.interaction.question}`;
-                                                        const botMsg = document.createElement('div');
-                                                        botMsg.classList.add('message', 'bot-message');
-                                                        botMsg.textContent = `Bot: ${conv.interaction.answer}`;
-                                                        conversationDiv.appendChild(userMsg);
-                                                        conversationDiv.appendChild(botMsg);
-                                                    });
-                                                });
+                                                .then(conversations => renderConversation('conversation', conversations));
                                         });
                                         userList.appendChild(userLi);
                                     });
@@ -284,15 +290,80 @@
                         });
                     });
                 });
+        }
+
+        // --- Channels View Logic ---
+        function loadChannels() {
+            fetch('/admin/channels')
+                .then(response => response.json())
+                .then(channels => {
+                    const channelList = document.getElementById('channel-list');
+                    channelList.innerHTML = '';
+                    channels.forEach(channel => {
+                        const channelDiv = document.createElement('div');
+                        channelDiv.classList.add('date-list-item');
+                        channelDiv.innerHTML = `<h4>${channel}</h4>`;
+                        const userList = document.createElement('ul');
+                        channelDiv.appendChild(userList);
+                        channelList.appendChild(channelDiv);
+
+                        channelDiv.addEventListener('click', () => {
+                            fetch(`/admin/channels/${channel}/users`)
+                                .then(response => response.json())
+                                .then(users => {
+                                    userList.innerHTML = '';
+                                    users.forEach(user => {
+                                        const userLi = document.createElement('li');
+                                        userLi.classList.add('user-list-item');
+                                        userLi.textContent = user.email;
+                                        userLi.addEventListener('click', (event) => {
+                                            event.stopPropagation();
+                                            fetch(`/admin/channels/${channel}/users/${user.id}/conversations`)
+                                                .then(response => response.json())
+                                                .then(conversations => renderConversation('channel-conversation', conversations));
+                                        });
+                                        userList.appendChild(userLi);
+                                    });
+                                });
+                        });
+                    });
+                });
+        }
+
+        // --- Knowledge Base Logic ---
+        uploadBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files[0];
+            if (file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                fetch('/admin/upload-document', { method: 'POST', body: formData })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) loadDocuments();
+                        else alert('File upload failed');
+                    });
+            }
         });
 
+        function loadDocuments() {
+            fetch('/admin/get-documents')
+                .then(response => response.json())
+                .then(documents => {
+                    documentList.innerHTML = '';
+                    documents.forEach(doc => {
+                        const docElement = document.createElement('div');
+                        docElement.classList.add('document-item');
+                        docElement.textContent = doc;
+                        documentList.appendChild(docElement);
+                    });
+                });
+        }
+
+        // --- Tickets Logic ---
         function loadTickets() {
-            const token = localStorage.getItem('adminAuthToken'); // Assuming admin token is stored
-            fetch('/admin/tickets', {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            })
+            const token = localStorage.getItem('adminAuthToken');
+            fetch('/admin/tickets', { headers: { 'Authorization': `Bearer ${token}` } })
                 .then(response => response.json())
                 .then(tickets => {
                     const ticketList = document.getElementById('ticket-list');
@@ -308,12 +379,8 @@
         }
 
         function loadTicketDetails(ticketId) {
-            const token = localStorage.getItem('adminAuthToken'); // Assuming admin token is stored
-            fetch(`/admin/tickets/${ticketId}`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            })
+            const token = localStorage.getItem('adminAuthToken');
+            fetch(`/admin/tickets/${ticketId}`, { headers: { 'Authorization': `Bearer ${token}` } })
                 .then(response => response.json())
                 .then(data => {
                     const ticketDetails = document.getElementById('ticket-details');
@@ -330,6 +397,8 @@
                 });
         }
 
+        // Initial Load
+        loadInboxDates();
     </script>
 </body>
 </html>
