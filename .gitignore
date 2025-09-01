@@ -1,5 +1,12 @@
 il": "himanshujha7489@mail.com", "password": "12345"}'
 
+# Node dependencies
+/node_modules
+
+# Next.js build output
+/.next/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
