@@ -136,3 +136,7 @@ backend/chroma_db/
 dump.rdb
 channels/whatsapp.py
 .env.env
+
+# Credentials and tokens (sensitive)
+credentials.json
+token.json

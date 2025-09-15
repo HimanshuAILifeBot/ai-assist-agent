@@ -4,9 +4,13 @@ from jose import JWTError, jwt
 import hashlib
 import hmac
 import os
+from dotenv import load_dotenv # Add this import
+
+load_dotenv() # Load environment variables from .env file
 
 # secret key (keep safe, use env var in production)
-SECRET_KEY = "mysecretkey123"
+SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key")
+print(f"SECRET_KEY loaded: {SECRET_KEY[:5]}...") # Print first 5 chars to confirm loading
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

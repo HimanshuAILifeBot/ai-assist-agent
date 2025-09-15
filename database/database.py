@@ -35,17 +35,31 @@ class Conversation(Base):
     # Timestamps
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    bot_id = Column(Integer, ForeignKey('bots.id'), nullable=True)
+    bot = relationship("Bot")
+
+
+class Bot(Base):
+    __tablename__ = 'bots'
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    bot_type = Column(String, index=True)
+    admin_id = Column(Integer, ForeignKey('admins.id'))
+    admin = relationship("Admin")
 
 
 class Ticket(Base):
     __tablename__ = 'tickets'
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    bot_id = Column(Integer, ForeignKey('bots.id'), nullable=True)
     topic = Column(String, nullable=False)
+    description = Column(String, nullable=True)  # Store the full query/context
     status = Column(String, default='open')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
     user = relationship("User")
+    bot = relationship("Bot")
 
 
 class Admin(Base):

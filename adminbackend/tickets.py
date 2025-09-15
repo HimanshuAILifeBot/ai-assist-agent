@@ -2,8 +2,8 @@ from sqlalchemy.orm import Session
 from database.database import Ticket, User
 import schemas
 
-def create_ticket(db: Session, ticket: schemas.TicketCreate, user_id: int):
-    db_ticket = Ticket(**ticket.dict(), user_id=user_id)
+def create_ticket(db: Session, ticket: schemas.TicketCreate, user_id: int, bot_id: int = None):
+    db_ticket = Ticket(**ticket.dict(), user_id=user_id, bot_id=bot_id)
     db.add(db_ticket)
     db.commit()
     db.refresh(db_ticket)
@@ -14,6 +14,12 @@ def get_user_tickets(db: Session, user_id: int):
 
 def get_all_tickets(db: Session):
     return db.query(Ticket).all()
+
+def get_bot_tickets(db: Session, bot_id: int):
+    return db.query(Ticket).filter(Ticket.bot_id == bot_id).all()
+
+def get_bot_ticket_details(db: Session, bot_id: int, ticket_id: int):
+    return db.query(Ticket).filter(Ticket.bot_id == bot_id, Ticket.id == ticket_id).first()
 
 def get_ticket_details(db: Session, ticket_id: int):
     return db.query(Ticket).filter(Ticket.id == ticket_id).first()

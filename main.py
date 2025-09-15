@@ -4,7 +4,7 @@ import os
 from datetime import timedelta, date
 from typing import List
 
-# from channels.whatsapp import send_whatsapp_message
+# ... (rest of the code) ...
 from fastapi import FastAPI, Depends, HTTPException, Request, File, UploadFile
 import shutil
 from fastapi.responses import HTMLResponse, Response
@@ -24,12 +24,24 @@ from auth.auth import (
     ALGORITHM,
 )
 from database.sessions import session_local
-from database.database import User, Admin, get_user_by_email, Conversation
-from backend.ragpipeline import router as rag_router
+from database.database import User, Admin, Bot, get_user_by_email, Conversation, Ticket
+# from backend.ragpipeline import router as rag_router
 from adminbackend.inbox import get_inbox_dates, get_users_by_date, get_user_conversation_by_date
 from backend.knowledgebase import update_knowledge_base
 import schemas
 from adminbackend import tickets as tickets_crud
+from schemas import UserResponse, ConversationResponse
+
+# Import bot routers
+from bots.banking_bot import router as banking_router
+from bots.career_counselling_bot import router as career_router
+from bots.retail_bot import router as retail_router
+from bots.insurance_bot import router as insurance_router
+from bots.hotel_booking_bot import router as hotel_booking_router
+from bots.telecom_bot import router as telecom_router
+from bots.real_estate_bot import router as real_estate_router
+from bots.lead_capturing_bot import router as lead_capturing_router
+from bots.course_enrollment_bot import router as course_enrollment_router
 
 app = FastAPI()
 
@@ -81,6 +93,19 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="User not found")
 
     return user
+
+@app.get("/users/me/bots", response_model=List[schemas.Bot])
+def get_user_bots(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns a list of bots associated with the current user.
+    """
+    # Assuming a user can be associated with multiple bots, or all bots are available to all users.
+    # For now, let's assume all created bots are available to any logged-in user.
+    # If bots are user-specific, this query needs to be adjusted.
+    return db.query(Bot).all() # Or filter by user_id if bots are assigned to users
 
 
 # ---------- Serve UI ----------
@@ -313,9 +338,180 @@ def read_admin_me(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_interface(request: Request):
+def admin_dashboard(request: Request, bot_id: int = None):
     """Serve the admin dashboard"""
-    return templates.TemplateResponse("admininterface.html", {"request": request})
+    return templates.TemplateResponse("dashboard.html", {"request": request, "bot_id": bot_id})
+
+
+@app.get("/create-bot", response_class=HTMLResponse)
+def create_bot_page(request: Request):
+    """Serve the bot creation page"""
+    return templates.TemplateResponse("create_bot.html", {"request": request})
+
+
+@app.get("/bot/{bot_id}/dashboard", response_class=HTMLResponse)
+def bot_dashboard_page(request: Request, bot_id: int):
+    """Serve the bot-specific dashboard page"""
+    return templates.TemplateResponse("bot_dashboard.html", {"request": request, "bot_id": bot_id})
+
+
+@app.get("/admin/bots/{bot_id}", response_model=schemas.Bot)
+def get_bot(
+    bot_id: int,
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.admin_id == current_admin.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    return bot
+
+
+# -------------------------
+#  Admin Bot Management
+# -------------------------
+AVAILABLE_BOTS = [
+    "Retail Bot",
+    "Telecom bot",
+    "Course Enrollment bot",
+    "Career Counselling Bot",
+    "Lead Capturing Bot",
+    "Insurance Bot",
+    "Hotel Booking Bot",
+    "Banking Bot",
+    "Real estate bot",
+]
+
+class BotCreate(BaseModel):
+    name: str
+    bot_type: str
+
+@app.get("/admin/bots/available", response_model=List[str])
+def get_available_bots():
+    """
+    Returns a list of available bot types. This endpoint is publicly accessible
+    and does not require authentication.
+    """
+    return AVAILABLE_BOTS
+
+@app.get("/public/bots/available", response_model=List[str])
+def get_public_available_bots():
+    """
+    Returns a list of available bot types. This endpoint is explicitly public
+    and does not require authentication.
+    """
+    return AVAILABLE_BOTS
+
+@app.post("/admin/bots", response_model=schemas.Bot)
+def create_bot(
+    bot: BotCreate,
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    if bot.bot_type not in AVAILABLE_BOTS:
+        raise HTTPException(status_code=400, detail="Invalid bot type")
+    
+    new_bot = Bot(
+        name=bot.name,
+        bot_type=bot.bot_type,
+        admin_id=current_admin.id
+    )
+    db.add(new_bot)
+    db.commit()
+    db.refresh(new_bot)
+    return new_bot
+
+@app.get("/admin/bots", response_model=List[schemas.Bot])
+def get_created_bots(
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    return db.query(Bot).filter(Bot.admin_id == current_admin.id).all()
+
+
+@app.get("/admin/bots/{bot_id}/inbox/dates", response_model=List[date])
+def get_bot_inbox_dates_route(bot_id: int, db: Session = Depends(get_db)):
+    return get_inbox_dates(db, bot_id=bot_id)
+
+
+@app.get("/admin/bots/{bot_id}/inbox/users", response_model=List[UserResponse])
+def get_bot_users_by_date_route(bot_id: int, date: date, db: Session = Depends(get_db)):
+    return get_users_by_date(db, date, bot_id=bot_id)
+
+
+@app.get("/admin/bots/{bot_id}/inbox/conversations", response_model=List[ConversationResponse])
+def get_bot_user_conversation_by_date_route(bot_id: int, user_id: int, date: date, db: Session = Depends(get_db)):
+    return get_user_conversation_by_date(db, user_id, date, bot_id=bot_id)
+
+
+@app.get("/admin/bots/{bot_id}/channels", response_model=List[str])
+def list_bot_channels(bot_id: int, db: Session = Depends(get_db)):
+    conversations = db.query(Conversation).filter(Conversation.bot_id == bot_id).all()
+    channel_set = {c.interaction.get("channel") for c in conversations if c.interaction.get("channel")}
+    return sorted(list(channel_set))
+
+@app.get("/admin/bots/{bot_id}/channels/{channel_name}/users", response_model=List[UserResponse])
+def get_bot_users_by_channel(bot_id: int, channel_name: str, db: Session = Depends(get_db)):
+    conversations = db.query(Conversation).filter(Conversation.bot_id == bot_id, Conversation.interaction["channel"].astext == channel_name).all()
+    if not conversations:
+        return []
+    
+    user_ids = {c.user_id for c in conversations}
+    
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    return users
+
+@app.get("/admin/bots/{bot_id}/channels/{channel_name}/users/{user_id}/conversations", response_model=List[ConversationResponse])
+def get_bot_user_conversations_by_channel(bot_id: int, channel_name: str, user_id: int, db: Session = Depends(get_db)):
+    conversations = (
+        db.query(Conversation)
+        .filter(
+            Conversation.bot_id == bot_id,
+            Conversation.user_id == user_id,
+            Conversation.interaction["channel"].astext == channel_name
+        )
+        .order_by(Conversation.created_at.asc())
+        .all()
+    )
+    return conversations
+
+
+# -------------------------
+#  Admin Tickets Routes
+# -------------------------
+
+@app.get("/admin/bots/{bot_id}/tickets", response_model=List[schemas.Ticket])
+def get_bot_tickets_route(
+    bot_id: int, 
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    return tickets_crud.get_bot_tickets(db=db, bot_id=bot_id)
+
+@app.get("/admin/bots/{bot_id}/tickets/{ticket_id}")
+def get_bot_ticket_details_route(
+    bot_id: int, 
+    ticket_id: int, 
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    ticket = tickets_crud.get_bot_ticket_details(db=db, bot_id=bot_id, ticket_id=ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    user = db.query(User).filter(User.id == ticket.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {
+        "ticket": ticket,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "phone_number": user.phone_number,
+            "name": user.name
+        }
+    }
 
 
 # -------------------------
@@ -393,6 +589,9 @@ def get_user_conversations_by_channel(channel_name: str, user_id: int, db: Sessi
 
 @app.get("/admin/inbox/dates", response_model=List[date])
 def get_inbox_dates_route(db: Session = Depends(get_db)):
+    """
+    Returns all distinct dates where interactions happened for any bot.
+    """
     return get_inbox_dates(db)
 
 
@@ -439,7 +638,7 @@ def create_admin_user(admin: AdminCreate, db: Session = Depends(get_db)):
 #  Omnichannel Webhooks
 # -------------------------
 from twilio.rest import Client
-from backend.ragpipeline import retrieval_chain, save_conversation
+from bot_loader import get_bot_by_type
 from channels.builders.web import WebMessageBuilder
 from channels.builders.twilio import TwilioMessageBuilder
 from channels.builders.sms import SmsMessageBuilder # New import
@@ -461,6 +660,68 @@ else:
     print("WARNING: Twilio credentials not found. WhatsApp/SMS replies will be disabled.")
 
 
+from bots.base_bot import QueryRequest, save_conversation
+
+@app.post("/bots/{bot_id}/query")
+def ask_question(
+    bot_id: int,
+    request: QueryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Handle user questions and return AI-generated answers"""
+    bot = db.query(Bot).filter(Bot.id == bot_id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    bot_instance = get_bot_by_type(bot.bot_type)
+    if not bot_instance:
+        raise HTTPException(status_code=500, detail="Bot implementation not found")
+
+    question = request.question
+    cached = bot_instance.get_cached_answer(question)
+
+    if cached:
+        answer = cached["answer"]
+    else:
+        result = bot_instance.retrieval_chain.invoke({"input": question})
+        answer = result["answer"]
+        bot_instance.set_cached_answer(question, result)
+
+    # Save the user's question
+    save_conversation(
+        db=db,
+        user_id=current_user.id,
+        bot_id=bot_id,
+        source="user",
+        content=question,
+        channel="web",
+        resolved=False,
+    )
+
+    # Save the bot's answer
+    save_conversation(
+        db=db,
+        user_id=current_user.id,
+        bot_id=bot_id,
+        source="bot",
+        content=answer,
+        channel="web",
+        resolved=False, # Or determine based on answer
+    )
+
+    # Check if human assistance is needed using the bot's detection logic
+    try:
+        needs_assistance = bot_instance.detect_human_assistance_needed(question, answer)
+        if needs_assistance:
+            return bot_instance.create_human_assistance_response(answer)
+        else:
+            return {"answer": answer, "needs_human_assistance": False}
+    except AttributeError:
+        # Fallback if bot doesn't have human assistance detection
+        return {"answer": answer, "needs_human_assistance": False}
+
+
 @app.post("/hooks/web")
 async def handle_web_message(payload: Dict[Any, Any], db: Session = Depends(get_db)):
     """
@@ -470,6 +731,18 @@ async def handle_web_message(payload: Dict[Any, Any], db: Session = Depends(get_
         builder = WebMessageBuilder(payload)
         standardized_message = builder.build()
         question = standardized_message.content
+        bot_id = payload.get("bot_id")
+
+        if not bot_id:
+            raise HTTPException(status_code=400, detail="bot_id is required")
+
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        bot_instance = get_bot_by_type(bot.bot_type)
+        if not bot_instance:
+            raise HTTPException(status_code=500, detail="Bot implementation not found")
 
         # --- Find user and save their message ---
         user = db.query(User).filter(User.email == standardized_message.sender_id).first()
@@ -479,18 +752,20 @@ async def handle_web_message(payload: Dict[Any, Any], db: Session = Depends(get_
         save_conversation(
             db=db, 
             user_id=user.id, 
+            bot_id=bot_id,
             source="user", 
             content=question, 
             channel=standardized_message.channel_name
         )
 
         # --- Generate and Save AI Response ---
-        result = retrieval_chain.invoke({"input": question})
+        result = bot_instance.retrieval_chain.invoke({"input": question})
         ai_response_text = result.get("answer", "I could not find an answer.")
 
         save_conversation(
             db=db, 
             user_id=user.id, 
+            bot_id=bot_id,
             source="bot", 
             content=ai_response_text, 
             channel=standardized_message.channel_name
@@ -503,8 +778,8 @@ async def handle_web_message(payload: Dict[Any, Any], db: Session = Depends(get_
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/hooks/twilio")
-async def handle_twilio_message(request: Request, db: Session = Depends(get_db)):
+@app.post("/hooks/twilio/{bot_id}")
+async def handle_twilio_message(request: Request, bot_id: int, db: Session = Depends(get_db)):
     """
     Handles incoming SMS from Twilio, gets an AI response, and sends a reply.
     """
@@ -513,6 +788,14 @@ async def handle_twilio_message(request: Request, db: Session = Depends(get_db))
         builder = TwilioMessageBuilder(payload)
         standardized_message = builder.build()
         question = standardized_message.content
+
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        bot_instance = get_bot_by_type(bot.bot_type)
+        if not bot_instance:
+            raise HTTPException(status_code=500, detail="Bot implementation not found")
 
         # --- Find user and save their message ---
         user = db.query(User).filter(User.phone_number == standardized_message.sender_id).first()
@@ -523,18 +806,20 @@ async def handle_twilio_message(request: Request, db: Session = Depends(get_db))
         save_conversation(
             db=db, 
             user_id=user.id, 
+            bot_id=bot_id,
             source="user", 
             content=question, 
             channel=standardized_message.channel_name
         )
 
         # --- Generate and Send AI Response ---
-        result = retrieval_chain.invoke({"input": question})
+        result = bot_instance.retrieval_chain.invoke({"input": question})
         ai_response_text = result.get("answer", "I could not find an answer.")
 
         save_conversation(
             db=db, 
             user_id=user.id, 
+            bot_id=bot_id,
             source="bot", 
             content=ai_response_text, 
             channel=standardized_message.channel_name
@@ -559,8 +844,8 @@ async def handle_twilio_message(request: Request, db: Session = Depends(get_db))
         return Response(content="", media_type="application/xml")
 
 
-@app.post("/hooks/sms")
-async def handle_sms_message(request: Request, db: Session = Depends(get_db)):
+@app.post("/hooks/sms/{bot_id}")
+async def handle_sms_message(request: Request, bot_id: int, db: Session = Depends(get_db)):
     """
     Handles incoming SMS from Twilio, gets an AI response, and sends a reply.
     """
@@ -569,6 +854,14 @@ async def handle_sms_message(request: Request, db: Session = Depends(get_db)):
         builder = SmsMessageBuilder(payload)
         standardized_message = builder.build()
         question = standardized_message.content
+
+        bot = db.query(Bot).filter(Bot.id == bot_id).first()
+        if not bot:
+            raise HTTPException(status_code=404, detail="Bot not found")
+
+        bot_instance = get_bot_by_type(bot.bot_type)
+        if not bot_instance:
+            raise HTTPException(status_code=500, detail="Bot implementation not found")
 
         # --- Find user and save their message ---
         user = db.query(User).filter(User.phone_number == standardized_message.sender_id).first()
@@ -579,18 +872,20 @@ async def handle_sms_message(request: Request, db: Session = Depends(get_db)):
         save_conversation(
             db=db, 
             user_id=user.id, 
+            bot_id=bot_id,
             source="user", 
             content=question, 
             channel=standardized_message.channel_name
         )
 
         # --- Generate and Send AI Response ---
-        result = retrieval_chain.invoke({"input": question})
+        result = bot_instance.retrieval_chain.invoke({"input": question})
         ai_response_text = result.get("answer", "I could not find an answer.")
 
         save_conversation(
             db=db, 
             user_id=user.id, 
+            bot_id=bot_id,
             source="bot", 
             content=ai_response_text, 
             channel=standardized_message.channel_name
@@ -616,7 +911,18 @@ async def handle_sms_message(request: Request, db: Session = Depends(get_db)):
 
 
 # Include the router from ragpipeline.py
-app.include_router(rag_router)
+# app.include_router(rag_router)
+
+# Include bot routers
+app.include_router(banking_router, prefix="/banking", tags=["Banking Bot"])
+app.include_router(career_router, prefix="/career", tags=["Career Bot"])
+app.include_router(retail_router, prefix="/retail", tags=["Retail Bot"])
+app.include_router(insurance_router, prefix="/insurance", tags=["Insurance Bot"])
+app.include_router(hotel_booking_router, prefix="/hotel-booking", tags=["Hotel Booking Bot"])
+app.include_router(telecom_router, prefix="/telecom", tags=["Telecom Bot"])
+app.include_router(real_estate_router, prefix="/real-estate", tags=["Real Estate Bot"])
+app.include_router(lead_capturing_router, prefix="/lead-capturing", tags=["Lead Capturing Bot"])
+app.include_router(course_enrollment_router, prefix="/course-enrollment", tags=["Course Enrollment Bot"])
 
 
 @app.post("/admin/upload-document")
@@ -636,14 +942,35 @@ async def get_documents():
     documents = os.listdir(upload_dir)
     return documents
 
+@app.get("/admin/bots/{bot_id}/knowledge-base", response_model=List[str])
+def get_bot_knowledge_base(
+    bot_id: int,
+    db: Session = Depends(get_db),
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """
+    Returns a list of knowledge base documents for a specific bot.
+    For now, it returns all documents in backend/uploaded_docs.
+    In a real application, this would be filtered by bot_id.
+    """
+    upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "uploaded_docs")
+    if not os.path.exists(upload_dir):
+        return []
+    documents = [f for f in os.listdir(upload_dir) if os.path.isfile(os.path.join(upload_dir, f))]
+    return documents
+
 
 @app.post("/users/me/tickets", response_model=schemas.Ticket)
 def create_ticket_for_user(
     ticket: schemas.TicketCreate,
+    bot_id: int = None,  # Optional bot_id parameter
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return tickets_crud.create_ticket(db=db, ticket=ticket, user_id=current_user.id)
+    print(f"DEBUG: Creating ticket with bot_id={bot_id}, topic='{ticket.topic}'")
+    result = tickets_crud.create_ticket(db=db, ticket=ticket, user_id=current_user.id, bot_id=bot_id)
+    print(f"DEBUG: Created ticket ID={result.id} with bot_id={result.bot_id}")
+    return result
 
 
 @app.get("/users/me/tickets", response_model=List[schemas.Ticket])
@@ -700,6 +1027,139 @@ def resolve_user_ticket(
     return tickets_crud.update_ticket_status(db=db, ticket_id=ticket_id, new_status="resolved")
 
 
+# Debug endpoint to test bot responses
+@app.post("/debug/test-banking-response")
+def debug_banking_response(db: Session = Depends(get_db)):
+    """Debug endpoint to test banking bot human assistance detection"""
+    try:
+        from bots.banking_bot import banking_bot
+        
+        # Create a mock request object
+        class MockRequest:
+            def __init__(self, question):
+                self.question = question
+        
+        # Create a mock user
+        class MockUser:
+            def __init__(self):
+                self.id = 1
+                self.email = "test@test.com"
+        
+        # Test queries that should trigger human assistance
+        test_queries = [
+            "I need human assistance with my account",
+            "I have fraud on my account", 
+            "Help me with unauthorized transaction",
+            "I want to speak to a human agent"
+        ]
+        
+        results = []
+        for query in test_queries:
+            try:
+                mock_request = MockRequest(query)
+                mock_user = MockUser()
+                
+                # Test the detection method directly
+                needs_assistance = banking_bot.detect_banking_human_assistance_needed(query, "sample response")
+                
+                results.append({
+                    "query": query,
+                    "needs_assistance_detected": needs_assistance,
+                    "test_status": "✅ Detected" if needs_assistance else "❌ Not detected"
+                })
+            except Exception as e:
+                results.append({
+                    "query": query,
+                    "error": str(e),
+                    "test_status": "❌ Error"
+                })
+        
+        return {
+            "message": "Banking bot human assistance detection test",
+            "results": results,
+            "banking_bot_type": str(type(banking_bot).__name__)
+        }
+        
+    except Exception as e:
+        return {"error": str(e), "details": "Failed to test banking bot"}
+
+
+# Debug endpoint to check database contents
+@app.get("/debug/database-status")
+def debug_database_status(db: Session = Depends(get_db)):
+    """Debug endpoint to check database status"""
+    try:
+        users = db.query(User).all()
+        tickets = db.query(Ticket).all()
+        bots = db.query(Bot).all()
+        
+        return {
+            "users_count": len(users),
+            "tickets_count": len(tickets),
+            "bots_count": len(bots),
+            "users": [{"id": u.id, "email": u.email} for u in users[:5]],
+            "tickets": [{"id": t.id, "user_id": t.user_id, "bot_id": t.bot_id, "topic": t.topic, "description": t.description[:100] if t.description else None} for t in tickets[:5]],
+            "bots": [{"id": b.id, "name": b.name, "bot_type": b.bot_type} for b in bots[:5]]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# Debug endpoint to test banking bot endpoint
+@app.post("/debug/test-banking-endpoint")
+def debug_banking_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Debug endpoint to test banking bot functionality"""
+    try:
+        from bots.banking_bot import banking_bot
+        
+        # Test query
+        question = "I need help with fraud"
+        result = banking_bot.retrieval_chain.invoke({"input": question})
+        answer = result["answer"]
+        
+        # Test human assistance detection
+        needs_assistance = banking_bot.detect_banking_human_assistance_needed(question, answer)
+        
+        # If needs assistance, create ticket
+        if needs_assistance:
+            from adminbackend import tickets as tickets_crud
+            import schemas
+            
+            ticket_data = schemas.TicketCreate(
+                topic="Debug Banking Test",
+                description=f"Debug test - Query: {question}\n\nBot Response: {answer}"
+            )
+            
+            ticket = tickets_crud.create_ticket(
+                db=db,
+                ticket=ticket_data,
+                user_id=current_user.id,
+                bot_id=5  # Banking bot ID
+            )
+            
+            return {
+                "success": True,
+                "question": question,
+                "answer": answer,
+                "needs_assistance": needs_assistance,
+                "ticket_created": True,
+                "ticket_id": ticket.id,
+                "ticket_bot_id": ticket.bot_id
+            }
+        else:
+            return {
+                "success": True,
+                "question": question,
+                "answer": answer,
+                "needs_assistance": needs_assistance,
+                "ticket_created": False
+            }
+            
+    except Exception as e:
+        return {"error": str(e), "details": "Failed to test banking endpoint"}
 
 
 

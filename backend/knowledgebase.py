@@ -54,7 +54,7 @@ def convert_to_langchain_documents(documents: List[Document]) -> List[LangchainD
         )
     return langchain_docs
 
-def add_documents_to_knowledge_base(documents: List[Document]):
+def add_documents_to_knowledge_base(documents: List[Document], persist_directory: str = None):
     """
     Adds a list of documents to the Chroma vector store.
     """
@@ -74,17 +74,18 @@ def add_documents_to_knowledge_base(documents: List[Document]):
         print("No document chunks to add to the knowledge base.")
         return
 
-    persist_dir = os.path.join(current_dir, "chroma_db")
+    if persist_directory is None:
+        persist_directory = os.path.join(current_dir, "chroma_db")
 
     vectorstore = Chroma(
-        persist_directory=persist_dir,
+        persist_directory=persist_directory,
         embedding_function=embeddings,
     )
     vectorstore.add_documents(document_chunks)
     print(f"✅ Knowledgebase updated with {len(documents)} documents.")
 
 
-def update_knowledge_base():
+def update_knowledge_base(persist_directory: str = None):
     """
     Loads all documents from the uploaded_docs directory, splits them into chunks,
     and updates the Chroma vector store.
@@ -117,11 +118,12 @@ def update_knowledge_base():
         print("No document chunks to add to the knowledge base.")
         return
 
-    persist_dir = os.path.join(current_dir, "../chroma_db")
+    if persist_directory is None:
+        persist_directory = os.path.join(current_dir, "../chroma_db")
 
     # Initialize from directory to add to existing DB
     vectorstore = Chroma(
-        persist_directory=persist_dir,
+        persist_directory=persist_directory,
         embedding_function=embeddings,
     )
     vectorstore.add_documents(document_chunks)

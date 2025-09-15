@@ -514,6 +514,9 @@
     <div class="main-content">
         <div class="content-header">
             <h1 class="content-title" id="contentTitle">AI Assistant</h1>
+            <select id="botSelect" style="padding: 8px; border-radius: 5px; background-color: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                <option value="">Select a Bot</option>
+            </select>
             <!-- Future: Add user settings or notifications here -->
         </div>
         <div class="content-body">
@@ -553,6 +556,7 @@
         let conversations = [];
         let tickets = [];
         let currentView = 'chat';
+        let selectedBotId = null; // New variable to store selected bot ID
 
         // Initialize the app
         function initializeApp() {
@@ -569,6 +573,7 @@
                 setupTextareaAutoResize();
                 loadConversations();
                 loadTickets();
+                loadBotsForUser(token); // NEW: Load bots for the user
             }, 100); // Add a small delay of 100ms
         }
 
@@ -643,6 +648,60 @@
             }
         }
 
+        // NEW FUNCTION: Load bots for the user
+        async function loadBotsForUser(token) {
+            try {
+                const response = await fetch('/users/me/bots', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const bots = await response.json();
+                    const botSelect = document.getElementById('botSelect');
+                    botSelect.innerHTML = '<option value="">Select a Bot</option>'; // Clear existing options
+
+                    if (bots.length === 0) {
+                        const option = document.createElement('option');
+                        option.value = "";
+                        option.textContent = "No bots available";
+                        botSelect.appendChild(option);
+                        botSelect.disabled = true;
+                        alert("No bots have been created yet. Please ask an admin to create one.");
+                        return;
+                    }
+
+                    bots.forEach(bot => {
+                        const option = document.createElement('option');
+                        option.value = bot.id;
+                        option.textContent = bot.name;
+                        botSelect.appendChild(option);
+                    });
+
+                    // Automatically select the first bot if available
+                    if (bots.length > 0) {
+                        botSelect.value = bots[0].id;
+                        selectedBotId = bots[0].id;
+                    }
+
+                    botSelect.addEventListener('change', (event) => {
+                        selectedBotId = event.target.value;
+                        console.log("Selected Bot ID:", selectedBotId);
+                    });
+
+                } else {
+                    throw new Error('Failed to load bots for user');
+                }
+            } catch (error) {
+                console.error('Error loading bots for user:', error);
+                alert("Error loading bots. Please try logging in again.");
+                // Optionally redirect to login if token is invalid
+                // localStorage.removeItem('authToken');
+                // window.location.href = '/';
+            }
+        }
+
         // Send message to AI
         async function sendMessage() {
             const input = document.getElementById('messageInput');
@@ -667,8 +726,37 @@
                 window.location.href = '/';
                 return;
             }
+
+            if (!selectedBotId) {
+                alert("Please select a bot to chat with.");
+                sendBtn.disabled = false;
+                return;
+            }
+
             try {
-                const response = await fetch('/query', {
+                // Use the correct bot endpoint structure
+                let botEndpoint;
+                switch(selectedBotId) {
+                    case 5:  // Banking Bot (Bank Agent)
+                        botEndpoint = '/banking/ask';
+                        break;
+                    case 2:  // Career Bot (him)
+                        botEndpoint = '/career/ask';
+                        break;
+                    case 4:  // Retail Bot (Customer service bot)
+                        botEndpoint = '/retail/ask';
+                        break;
+                    case 3:  // Hotel Bot (HotelBot)
+                        botEndpoint = '/hotel/ask';
+                        break;
+                    case 1:  // Telecom Bot (my bot)
+                        botEndpoint = '/telecom/ask';
+                        break;
+                    default:
+                        botEndpoint = `/bots/${selectedBotId}/query`; // Fallback for other bots
+                }
+
+                const response = await fetch(botEndpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -679,11 +767,23 @@
                 
                 const data = await response.json();
                 
+                // Debug logging to see what the bot returns
+                console.log('Bot response data:', data);
+                console.log('needs_human_assistance:', data.needs_human_assistance);
+                console.log('human_assistance_message:', data.human_assistance_message);
+                
                 // Remove loading
                 loadingElement.remove();
                 
                 if (response.ok) {
-                    addMessage(data.answer, 'assistant');
+                    // Check if human assistance is needed
+                    if (data.needs_human_assistance) {
+                        console.log('Human assistance detected - should show button');
+                        addMessage(data.answer, 'assistant', true, data.human_assistance_message);
+                    } else {
+                        console.log('No human assistance needed');
+                        addMessage(data.answer, 'assistant');
+                    }
                     // Save conversation
                     saveConversation(message, data.answer);
                 } else {
@@ -698,7 +798,7 @@
             }
         }
 
-        function addMessage(text, sender) {
+        function addMessage(text, sender, needsHumanAssistance = false, humanAssistanceMessage = '') {
             const messagesContainer = document.getElementById('messagesContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
@@ -709,12 +809,43 @@
 
             messageDiv.appendChild(messageContentDiv);
 
-            if (sender === 'assistant' && text.toLowerCase().includes('flag this for human assistance')) {
+            // Add human assistance button if needed
+            console.log('addMessage - needsHumanAssistance:', needsHumanAssistance);
+            console.log('addMessage - text includes flag:', text.toLowerCase().includes('flag this for human assistance'));
+            console.log('addMessage - text:', text);
+            
+            if (needsHumanAssistance || text.toLowerCase().includes('flag this for human assistance')) {
+                console.log('Creating human assistance button');
+                const assistanceDiv = document.createElement('div');
+                assistanceDiv.className = 'human-assistance-section';
+                assistanceDiv.style.marginTop = '10px';
+                assistanceDiv.style.padding = '10px';
+                assistanceDiv.style.background = 'rgba(255, 107, 53, 0.1)';
+                assistanceDiv.style.borderRadius = '8px';
+                assistanceDiv.style.borderLeft = '3px solid var(--accent-primary)';
+                
+                const assistanceMessage = document.createElement('p');
+                assistanceMessage.textContent = humanAssistanceMessage || 'It seems like you might need additional help. Would you like to flag this query for human assistance?';
+                assistanceMessage.style.margin = '0 0 10px 0';
+                assistanceMessage.style.fontSize = '14px';
+                assistanceMessage.style.color = 'var(--text-secondary)';
+                
                 const button = document.createElement('button');
-                button.textContent = 'Flag for Human Assistance';
-                button.onclick = flagForAssistance;
-                messageDiv.appendChild(document.createElement('br'));
-                messageDiv.appendChild(button);
+                button.textContent = '🚩 Flag for Human Assistance';
+                button.className = 'human-assistance-button';
+                button.style.background = 'var(--accent-gradient)';
+                button.style.color = 'white';
+                button.style.border = 'none';
+                button.style.padding = '8px 16px';
+                button.style.borderRadius = '6px';
+                button.style.cursor = 'pointer';
+                button.style.fontSize = '14px';
+                button.style.fontWeight = '500';
+                button.onclick = () => flagForAssistance();
+                
+                assistanceDiv.appendChild(assistanceMessage);
+                assistanceDiv.appendChild(button);
+                messageDiv.appendChild(assistanceDiv);
             }
 
             messagesContainer.appendChild(messageDiv);
@@ -727,28 +858,89 @@
                 window.location.href = '/';
                 return;
             }
+            
             const topic = prompt("Please briefly describe your query in one line:");
-            if (topic) {
-                try {
-                    const response = await fetch('/users/me/tickets', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ topic: topic })
-                    });
-
-                    if (response.ok) {
-                        addMessage("Your query has been flagged for human assistance. You can track the status in the Support Tickets section. <button onclick=\"startNewConversation()\" class=\"start-new-chat-button\">Start New Conversation</button>", 'assistant');
-                        loadTickets();
-                    } else {
-                        alert("Failed to flag your query. Please try again.");
-                    }
-                } catch (error) {
-                    console.error('Error flagging query:', error);
-                    alert("An error occurred while flagging your query.");
+            if (!topic || topic.trim() === '') {
+                return;
+            }
+            
+            try {
+                // Get the last user query for context
+                const chatMessages = document.querySelectorAll('.message.user .message-content');
+                const lastUserQuery = chatMessages.length > 0 ? chatMessages[chatMessages.length - 1].textContent : '';
+                
+                // Use the appropriate bot endpoint for human assistance
+                let assistanceEndpoint;
+                switch(selectedBotId) {
+                    case 5:  // Banking Bot (Bank Agent)
+                        assistanceEndpoint = '/banking/request-human-assistance';
+                        break;
+                    case 2:  // Career Bot (him)
+                        assistanceEndpoint = '/career/request-human-assistance';
+                        break;
+                    case 4:  // Retail Bot (Customer service bot)
+                        assistanceEndpoint = '/retail/request-human-assistance';
+                        break;
+                    case 3:  // Hotel Bot (HotelBot)
+                        assistanceEndpoint = '/hotel/request-human-assistance';
+                        break;
+                    case 1:  // Telecom Bot (my bot)
+                        assistanceEndpoint = '/telecom/request-human-assistance';
+                        break;
+                    default:
+                        // Fallback to the general tickets endpoint
+                        assistanceEndpoint = '/users/me/tickets';
                 }
+
+                // Create proper request body based on bot endpoint
+                const requestBody = [1, 2, 3, 4, 5].includes(selectedBotId) 
+                    ? { 
+                        user_id: 1, // This will be overridden by authentication
+                        query: lastUserQuery || topic.trim(),
+                        context: `User requested human assistance with topic: ${topic.trim()}`
+                      }
+                    : { topic: topic.trim() };
+
+                // Add bot_id to the URL for the fallback endpoint
+                const finalEndpoint = assistanceEndpoint === '/users/me/tickets' 
+                    ? `/users/me/tickets?bot_id=${selectedBotId}` 
+                    : assistanceEndpoint;
+
+                const response = await fetch(finalEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    const successMessage = `
+                        <div style="background: rgba(34, 197, 94, 0.1); border-left: 3px solid #22c55e; padding: 12px; border-radius: 6px; margin: 10px 0;">
+                            <p style="margin: 0; color: #22c55e; font-weight: 500;">✅ Query Flagged Successfully!</p>
+                            <p style="margin: 5px 0 0 0; font-size: 14px; color: var(--text-secondary);">
+                                Your query has been flagged for human assistance. Ticket ID: #${result.ticket_id || 'Generated'}
+                            </p>
+                            <p style="margin: 5px 0 0 0; font-size: 13px; color: var(--text-muted);">
+                                You can track the status in the Support Tickets section.
+                            </p>
+                        </div>
+                        <button onclick="startNewConversation()" class="start-new-chat-button" style="background: var(--accent-gradient); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-top: 10px;">
+                            Start New Conversation
+                        </button>
+                    `;
+                    addMessage(successMessage, 'assistant');
+                    loadTickets(); // Refresh tickets list
+                } else {
+                    alert("Failed to flag your query. Please try again.");
+                    console.error('Error response:', result);
+                }
+            } catch (error) {
+                console.error('Error flagging query:', error);
+                alert("An error occurred while flagging your query. Please try again.");
             }
         }
 
